@@ -1,0 +1,23 @@
+# Excluded research and problem statement files
+deep-research-report-pokerbots.md
+gemini pokerbots deep research.docx
+info.md
+research report c.md
+unified_pokerbots_2026_master_blueprint.md
+NHPC Paper Extension.docx
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Match logs
+logs/
+*.log
+*_stderr.txt
+
+# Environment and editor files
+.vscode/
+.idea/
+*.tmp
