@@ -49,3 +49,4 @@ Run tournament benchmarks against the sparring pool:
 ```powershell
 python tools/arena.py --matches 5 --jobs 4
 ```
+

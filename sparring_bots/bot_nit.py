@@ -2,27 +2,32 @@ import sys
 import json
 
 RANKS = "23456789TJQKA"
+CURRENT_HOLE = []
 
 def preflop_rank_score(hole):
+    if not hole:
+        return 10.0
     ranks = sorted([RANKS.index(c[0]) for c in hole], reverse=True)
-    # Pairs, high cards
-    is_pair = (ranks[0] == ranks[1]) or (ranks[1] == ranks[2])
+    if len(ranks) < 2:
+        return ranks[0] if ranks else 5.0
+    is_pair = (ranks[0] == ranks[1]) or (len(ranks) > 2 and ranks[1] == ranks[2])
     high = ranks[0]
     return (10 if is_pair else 0) + high + ranks[1] * 0.5
 
 def choose_discard(req):
-    hole = req.get("hole_cards", [])
-    worst = min(hole, key=lambda c: RANKS.index(c[0]))
+    global CURRENT_HOLE
+    hole = req.get("hole_cards", []) or CURRENT_HOLE
+    worst = min(hole, key=lambda c: RANKS.index(c[0])) if hole else "2c"
     return {"type": "discard", "card": worst}
 
 def choose_action(req):
+    global CURRENT_HOLE
     legal = req.get("legal_actions", [])
     to_call = int(req.get("to_call", 0))
     street = req.get("street", "preflop")
-    hole = req.get("hole_cards", [])
 
     if street == "preflop":
-        score = preflop_rank_score(hole)
+        score = preflop_rank_score(CURRENT_HOLE)
         # Only play top hands
         if score >= 17:
             if "raise" in legal:
@@ -54,6 +59,7 @@ def choose_action(req):
     return {"type": "action", "action": "check" if "check" in legal else "fold"}
 
 def main():
+    global CURRENT_HOLE
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -63,16 +69,21 @@ def main():
         except ValueError:
             continue
         t = msg.get("type")
-        if t == "action_request":
-            reply = choose_action(msg)
+        if t == "new_hand":
+            CURRENT_HOLE = list(msg.get("hole_cards", []))
         elif t == "discard_request":
+            CURRENT_HOLE = list(msg.get("hole_cards", []))
             reply = choose_discard(msg)
+            print(json.dumps(reply), flush=True)
+        elif t == "discard_result":
+            CURRENT_HOLE = list(msg.get("hole_cards", []))
+        elif t == "action_request":
+            reply = choose_action(msg)
+            print(json.dumps(reply), flush=True)
         elif t == "match_end":
             break
         else:
             continue
-        print(json.dumps(reply), flush=True)
 
 if __name__ == "__main__":
     main()
-

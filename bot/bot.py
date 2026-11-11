@@ -348,7 +348,7 @@ def compute_bayesian_post_discard_range(flop3, hero_keep2, my_disc, opp_disc, op
 
 def exact_river_range_equity(board5, hero2, opp_c1, opp_c2, opp_weights, my_disc=None):
     if opp_c1 is None or opp_c2 is None or opp_weights is None or len(opp_c1) == 0:
-        return 0.50, 0.0, False
+        return 0.50, 0.0, False, 0.50
 
     t_card, r_card = board5[3], board5[4]
     valid_mask = (opp_c1 != t_card) & (opp_c1 != r_card) & (opp_c2 != t_card) & (opp_c2 != r_card)
@@ -374,7 +374,29 @@ def exact_river_range_equity(board5, hero2, opp_c1, opp_c2, opp_weights, my_disc
 
     wins = float(np.sum(w[h_score > o_scores]))
     ties = float(np.sum(w[h_score == o_scores]))
-    eq = wins + 0.5 * ties
+    raw_eq = wins + 0.5 * ties
+
+    # Conditional equity when opponent calls a river bet:
+    # Better opponent hands (o_scores > h_score) call ~98% of the time;
+    # Equal hands call ~90%; worse hands only call if they are at least a decent pair (cat >= 1)
+    # weighted by how high their score is relative to the board/median.
+    med_score = float(np.median(o_scores)) if len(o_scores) > 0 else 0.0
+    o_cat = (o_scores >> 20)
+    call_prob = np.where(
+        o_scores > h_score,
+        0.98,
+        np.where(
+            o_scores == h_score,
+            0.90,
+            np.where((o_cat >= 2) | ((o_cat == 1) & (o_scores >= med_score)), 0.48, 0.10)
+        )
+    ).astype(np.float32)
+    cw = w * call_prob
+    cw_sum = float(np.sum(cw))
+    if cw_sum > 1e-9:
+        eq_when_called = float(np.sum(cw[h_score > o_scores]) + 0.5 * np.sum(cw[h_score == o_scores])) / cw_sum
+    else:
+        eq_when_called = raw_eq
 
     # Fraction of opponent combinations holding Straight or better
     opp_nut_share = float(np.sum(w[(o_scores >> 20) >= 4]))
@@ -402,7 +424,7 @@ def exact_river_range_equity(board5, hero2, opp_c1, opp_c2, opp_weights, my_disc
                 has_nut_blocker = True
                 break
 
-    return eq, opp_nut_share, has_nut_blocker
+    return raw_eq, opp_nut_share, has_nut_blocker, eq_when_called
 
 
 # ==============================================================================
@@ -410,101 +432,190 @@ def exact_river_range_equity(board5, hero2, opp_c1, opp_c2, opp_weights, my_disc
 # ==============================================================================
 class OpponentAndMatchTracker:
     def __init__(self):
+        self.reset()
+
+    def reset(self):
         self.total_hands = 400
         self.cap_c = 400
         self.cum_net = 0
         self.hands_played = 0
-        # Bug-fixed opponent behavioral statistics
+        # Street-separated opponent counters
         self.opp_vpip = 0
         self.opp_pfr = 0
-        self.opp_3bet = 0
-        self.opp_faced_bet = 0
-        self.opp_folded_to_bet = 0
-        self.opp_called_bet = 0
-        self.opp_raised_bet = 0
+        self.opp_pre_faced_bet = 0
+        self.opp_pre_folded = 0
+        self.opp_post_faced_bet = 0
+        self.opp_post_folded = 0
+        self.opp_river_faced_bet = 0
+        self.opp_river_folded = 0
         self.opp_postflop_bets = 0
-        self.opp_postflop_opportunities = 0
+        self.opp_postflop_actions = 0
+        self.opp_check_raises = 0
         self.opp_all_ins = 0
+        # Showdown intelligence counters
+        self.sd_count = 0
+        self.sd_rational_discards = 0
+        self.sd_aggr_rivers = 0
+        self.sd_bluff_rivers = 0
+        self.match_locked = False
+        self.opp_tr_opportunities = 0
+        self.opp_tr_big_bets = 0
 
     def on_init(self, msg):
-        self.total_hands = int(msg.get("total_hands", 400))
-        self.cap_c = 1000 if self.total_hands >= 800 else 400
+        self.total_hands = int(msg.get("total_hands", msg.get("hands", 400)))
+        self.cap_c = int(msg.get("cap", 1000 if self.total_hands >= 800 else 400))
 
     def on_hand_result(self, msg):
         self.hands_played += 1
         self.cum_net += int(msg.get("net", 0))
         hist = msg.get("history", [])
-
         opp_pre_vol = False
         opp_pre_raise = False
-        opp_pre_3bet = False
-
-        # Reconstruct street bet amounts to accurately detect when opp faced a voluntary bet
+        opp_checked_this_street = False
         cur_street = "preflop"
-        btn_actor = hist[0].get("actor") if hist and hist[0].get("street") == "preflop" else "me"
-        my_bet = 1 if btn_actor == "me" else 2
-        opp_bet = 2 if btn_actor == "me" else 1
-        pre_raises = 0
+        opp_bet_river = False
 
+        # Track whether opponent is actually facing a bet from hero
+        street_commits = {"preflop": [1, 2], "flop": [0, 0], "turn": [0, 0], "river": [0, 0]}
         for h in hist:
-            st = h.get("street", "preflop")
-            if st != cur_street:
-                cur_street = st
-                my_bet = 0
-                opp_bet = 0
-
             actor = h.get("actor")
             act = h.get("action")
+            st = h.get("street", "preflop")
             amt = int(h.get("amount", 0))
+            if st != cur_street:
+                cur_street = st
+                opp_checked_this_street = False
 
-            if actor == "me":
-                if act in ("call", "raise"):
-                    if st == "preflop" and act == "raise":
-                        pre_raises += 1
-                    my_bet = max(my_bet, amt)
+            if actor == "me" and act == "raise":
+                street_commits[st][0] = amt
             elif actor == "opp":
-                facing_voluntary_bet = (my_bet > opp_bet) and not (st == "preflop" and my_bet == 2 and opp_bet == 1)
-                if facing_voluntary_bet:
-                    self.opp_faced_bet += 1
-                    if act == "fold":
-                        self.opp_folded_to_bet += 1
-                    elif act == "call":
-                        self.opp_called_bet += 1
-                    elif act == "raise":
-                        self.opp_raised_bet += 1
-
+                if st in ("turn", "river"):
+                    self.opp_tr_opportunities += 1
+                    if act == "raise" and amt >= 18:
+                        self.opp_tr_big_bets += 1
+                facing_bet = street_commits[st][0] > street_commits[st][1]
                 if st == "preflop":
                     if act in ("call", "raise"):
                         opp_pre_vol = True
                     if act == "raise":
                         opp_pre_raise = True
-                        if pre_raises >= 1:
-                            opp_pre_3bet = True
-                        pre_raises += 1
+                        street_commits[st][1] = amt
+                    elif act == "call":
+                        street_commits[st][1] = amt
+                    if facing_bet and act in ("fold", "call", "raise"):
+                        self.opp_pre_faced_bet += 1
+                        if act == "fold":
+                            self.opp_pre_folded += 1
                 else:
-                    self.opp_postflop_opportunities += 1
-                    if act == "raise":
+                    self.opp_postflop_actions += 1
+                    if act == "check":
+                        opp_checked_this_street = True
+                    elif act == "raise":
                         self.opp_postflop_bets += 1
+                        street_commits[st][1] = amt
+                        if opp_checked_this_street:
+                            self.opp_check_raises += 1
+                        if st == "river":
+                            opp_bet_river = True
+                    elif act == "call":
+                        street_commits[st][1] = amt
 
-                if amt >= 180:
+                    if facing_bet and act in ("fold", "call", "raise"):
+                        self.opp_post_faced_bet += 1
+                        if act == "fold":
+                            self.opp_post_folded += 1
+                        if st == "river":
+                            self.opp_river_faced_bet += 1
+                            if act == "fold":
+                                self.opp_river_folded += 1
+
+                if amt >= 160:
                     self.opp_all_ins += 1
-                if act in ("call", "raise"):
-                    opp_bet = max(opp_bet, amt)
 
         if opp_pre_vol:
             self.opp_vpip += 1
         if opp_pre_raise:
             self.opp_pfr += 1
-        if opp_pre_3bet:
-            self.opp_3bet += 1
+
+        # Parse Showdown Intelligence (opp_hole_cards & opp_discard)
+        opp_hole = msg.get("opp_hole_cards")
+        opp_disc = msg.get("opp_discard")
+        board = msg.get("board", [])
+        if msg.get("result") == "showdown" and opp_hole and len(opp_hole) == 2 and len(board) >= 3:
+            self.sd_count += 1
+            if opp_disc and opp_disc in CARD_TO_INT:
+                try:
+                    flop3 = np.array([CARD_TO_INT[c] for c in board[:3]], dtype=np.int32)
+                    k0, k1 = CARD_TO_INT[opp_hole[0]], CARD_TO_INT[opp_hole[1]]
+                    d_int = CARD_TO_INT[opp_disc]
+                    c1s = np.array([k0, k0, k1], dtype=np.int32)
+                    c2s = np.array([k1, d_int, d_int], dtype=np.int32)
+                    vals = flop_keep_value_batch(c1s, c2s, flop3)
+                    # vals[0] is what opponent actually kept (k0, k1)
+                    if vals[0] >= np.max(vals) - 0.35:
+                        self.sd_rational_discards += 1
+                except Exception:
+                    pass
+            if len(board) == 5 and opp_bet_river:
+                self.sd_aggr_rivers += 1
+                try:
+                    b5 = np.array([CARD_TO_INT[c] for c in board[:5]], dtype=np.int32)
+                    oh2 = np.array([CARD_TO_INT[c] for c in opp_hole[:2]], dtype=np.int32)
+                    b_code = CARD_CODE[b5].sum() + CARD_CODE[oh2[0]] + CARD_CODE[oh2[1]]
+                    b_sbits = (CARD_SUIT_BIT[:, b5].sum(axis=1) + CARD_SUIT_BIT[:, oh2[0]] + CARD_SUIT_BIT[:, oh2[1]])[:, None]
+                    oscore = int(eval_batch_codes(np.array([b_code], dtype=np.int64), b_sbits)[0])
+                    cat = oscore >> 20
+                    # High card (cat 0) or weak pair (cat 1 with rank < 6) betting river = bluff
+                    if cat == 0 or (cat == 1 and ((oscore >> 12) & 0xF) < 6):
+                        self.sd_bluff_rivers += 1
+                except Exception:
+                    pass
+
+    def get_dynamic_tau(self):
+        """Dynamically calibrates Bayesian discard temperature from observed showdowns."""
+        if self.sd_count < 3:
+            return 0.35
+        rat_rate = (self.sd_rational_discards + 1.5) / (self.sd_count + 2.0)
+        if rat_rate < 0.55:
+            return 0.80  # Opponent discards randomly/deceptively: keep range wide!
+        elif rat_rate > 0.82:
+            return 0.28  # Opponent discards strictly by flop value: narrow sharply!
+        return 0.35
+
+    @property
+    def pre_fold_rate(self):
+        return (self.opp_pre_folded + 2.2) / (self.opp_pre_faced_bet + 5.0)
+
+    @property
+    def post_fold_rate(self):
+        return (self.opp_post_folded + 2.0) / (self.opp_post_faced_bet + 5.0)
+
+    @property
+    def river_fold_rate(self):
+        return (self.opp_river_folded + 1.2) / (self.opp_river_faced_bet + 3.0)
+
+    @property
+    def anti_trap_active(self):
+        return (self.opp_post_faced_bet >= 6 and self.post_fold_rate < 0.34) or (self.opp_check_raises >= 2)
+
+    def is_censored_polarized_bluffer(self):
+        # Only triggers against an opponent like bot_nemesis who fires big turn/river bets
+        # (>20% of all turn/river actions) AND avoids showdowns, or high frequency big barreling
+        if self.hands_played < 16 or self.opp_tr_opportunities < 10:
+            return False
+        big_bet_rate = self.opp_tr_big_bets / float(self.opp_tr_opportunities)
+        sd_rate = self.sd_count / float(self.hands_played)
+        return (big_bet_rate >= 0.20 and sd_rate <= 0.38) or (big_bet_rate >= 0.22)
 
     def get_archetype_and_adjustments(self):
         n = max(1, self.hands_played)
-        conf = min(0.75, n / 50.0)
+        conf = min(0.85, n / 20.0)
         vpip_rate = self.opp_vpip / n
         pfr_rate = self.opp_pfr / n
-        fold_rate = self.opp_folded_to_bet / max(1, self.opp_faced_bet)
-        aggr_rate = self.opp_postflop_bets / max(1, self.opp_postflop_opportunities)
+        pre_fr = self.pre_fold_rate
+        post_fr = self.post_fold_rate
+        river_fr = self.river_fold_rate
+        aggr_rate = self.opp_postflop_bets / max(1, self.opp_postflop_actions)
         shove_rate = self.opp_all_ins / n
 
         archetype = "GTO"
@@ -513,42 +624,61 @@ class OpponentAndMatchTracker:
         value_size_mult = 1.0
         open_thresh_delta = 0.0
 
-        if n >= 10:
-            if fold_rate < 0.28 and pfr_rate < 0.22:
+        if n >= 6:
+            if shove_rate > 0.20 or (pfr_rate > 0.55 and aggr_rate > 0.48):
+                # Archetype 7: Maniac / Shove-Bot
+                archetype = "MANIAC"
+                bluff_mult = 0.10
+                value_size_mult = 1.35
+                call_delta = -0.09 * conf
+                open_thresh_delta = +0.03
+            elif post_fr < 0.28 and pfr_rate < 0.25:
                 # Archetype 1/2: Fish / Calling Station / Check-Call Starter Bot
                 archetype = "FISH_STATION"
                 bluff_mult = 0.0
                 value_size_mult = 1.40
                 call_delta = +0.03 * conf
                 open_thresh_delta = -0.02
-            elif fold_rate > 0.56 and pfr_rate < 0.35:
+            elif (pre_fr > 0.48 or post_fr > 0.48) and pfr_rate < 0.32:
                 # Archetype 6: Nit / Over-Folder
                 archetype = "NIT"
-                bluff_mult = 1.75
+                bluff_mult = 1.85
                 value_size_mult = 0.85
-                call_delta = +0.05 * conf
-                open_thresh_delta = -0.06  # Steal blinds wider!
-            elif shove_rate > 0.22 or (pfr_rate > 0.58 and aggr_rate > 0.52):
-                # Archetype 7: Maniac / Shove-Bot
-                archetype = "MANIAC"
-                bluff_mult = 0.10
-                value_size_mult = 1.30
-                call_delta = -0.09 * conf  # Call down lighter
-                open_thresh_delta = +0.04
-            elif vpip_rate > 0.58 and pfr_rate > 0.38:
+                call_delta = +0.07 * conf
+                open_thresh_delta = -0.09  # Steal blinds aggressively
+            elif vpip_rate > 0.58 and pfr_rate > 0.36:
                 # Archetype 4: LAG
                 archetype = "LAG"
                 bluff_mult = 0.65
                 value_size_mult = 1.15
                 call_delta = -0.04 * conf
-            elif 0.35 <= vpip_rate <= 0.58 and 0.22 <= pfr_rate <= 0.42:
+            elif (0.30 <= vpip_rate <= 0.58 and 0.20 <= pfr_rate <= 0.42) or (0.36 <= post_fr <= 0.55 and pfr_rate < 0.38):
                 # Archetype 3: TAG
                 archetype = "TAG"
-                bluff_mult = 1.10
+                bluff_mult = 1.30
                 value_size_mult = 1.05
-                call_delta = +0.01 * conf
+                call_delta = +0.04 * conf
+                open_thresh_delta = -0.06
+
+        # Anti-Trap Governor: immediately disable pure air bluffs if opponent calls down or traps
+        if self.anti_trap_active:
+            bluff_mult = min(bluff_mult, 0.15)
+
+        # Showdown-calibrated river bluff-catching
+        if (self.sd_bluff_rivers >= 1 and (self.sd_bluff_rivers / max(1, self.sd_aggr_rivers)) >= 0.20) or self.is_censored_polarized_bluffer():
+            call_delta -= 0.04
 
         return archetype, call_delta, bluff_mult, value_size_mult, open_thresh_delta
+
+    def is_mathematical_lock(self, hand_id, street="preflop", my_bet=0):
+        if self.match_locked:
+            return True
+        hands_rem = max(0, self.total_hands - hand_id + 1)
+        max_blind_loss = int(math.ceil(hands_rem * 0.75)) + 12
+        if street == "preflop" and my_bet <= 2 and self.cum_net >= (self.cap_c + max_blind_loss):
+            self.match_locked = True
+            return True
+        return False
 
     def get_match_mode(self, hand_id):
         hands_rem = max(0, self.total_hands - hand_id + 1)
@@ -657,7 +787,10 @@ def choose_discard(req):
     hero3 = np.array([CARD_TO_INT[c] for c in hole_strs], dtype=np.int32)
     flop3 = np.array(STATE.flop_cards, dtype=np.int32)
     time_left = int(req.get("time_left_ms", 60000))
-    n_sims = 340 if time_left > 15000 else (100 if time_left > 5000 else 0)
+    if TRACKER.match_locked:
+        n_sims = 0
+    else:
+        n_sims = 340 if time_left > 15000 else (100 if time_left > 5000 else 0)
     best_d, _, _ = evaluate_3way_flop_discard(hero3, flop3, n_rollouts=n_sims, opp_aggr=STATE.opp_aggr)
     return sanitize_discard({"type": "discard", "card": hole_strs[best_d]}, req)
 
@@ -672,7 +805,12 @@ def choose_action(req):
     opp_bet = int(req.get("opp_bet", 0))
     time_left = int(req.get("time_left_ms", 60000))
 
-    # 1. Check 4-Mode Match Risk Controller
+    # 1. Check Sticky Mathematical Lock and 4-Mode Match Risk Controller
+    if TRACKER.is_mathematical_lock(hand_id, street, my_bet):
+        if "check" in legal:
+            return sanitize_action({"type": "action", "action": "check"}, req)
+        return sanitize_action({"type": "action", "action": "fold"}, req)
+
     match_mode = TRACKER.get_match_mode(hand_id)
     if match_mode in ("LOCK_FULL_CAP", "LOCK_MATCH_WIN"):
         if "check" in legal:
@@ -715,8 +853,11 @@ def choose_action(req):
 
         # CASE A: Unopened Pot on the Button (my_bet == 1, opp_bet == 2, to_call == 1)
         if my_bet == 1 and opp_bet == 2 and to_call == 1:
-            open_raise_thresh = 0.455 + open_thresh_delta
-            limp_thresh = 0.395 + open_thresh_delta
+            steal_delta = open_thresh_delta
+            if TRACKER.pre_fold_rate > 0.45:
+                steal_delta = min(steal_delta, -0.07)
+            open_raise_thresh = 0.455 + steal_delta
+            limp_thresh = 0.395 + steal_delta
             if eq >= open_raise_thresh and "raise" in legal:
                 target = 6 if eq >= 0.56 else 5
                 return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
@@ -768,6 +909,7 @@ def choose_action(req):
                     CARD_TO_INT[STATE.my_discard],
                     CARD_TO_INT[STATE.opp_discard],
                     opp_aggr_level=STATE.opp_aggr,
+                    tau=TRACKER.get_dynamic_tau(),
                 )
             if time_left <= 3000:
                 vals = flop_keep_value_batch(hero2[0:1], hero2[1:2], board4[:3])
@@ -784,7 +926,7 @@ def choose_action(req):
                 eq_sum = 0.0
                 for rc in sampled_rivers:
                     b5 = np.append(board4, np.int32(rc))
-                    e_val, _, _ = exact_river_range_equity(b5, hero2, STATE.opp_c1, STATE.opp_c2, STATE.opp_weights)
+                    e_val, _, _, _ = exact_river_range_equity(b5, hero2, STATE.opp_c1, STATE.opp_c2, STATE.opp_weights)
                     eq_sum += e_val
                 eq = eq_sum / float(n_riv)
             else:
@@ -793,6 +935,7 @@ def choose_action(req):
             eq = 0.50
         opp_nut_share = 0.0
         has_nut_blocker = False
+        eq_when_called = eq
     else:  # river
         if len(STATE.hole_cards) >= 2 and len(req.get("board", [])) >= 5:
             board5 = np.array([CARD_TO_INT[c] for c in req["board"][:5]], dtype=np.int32)
@@ -804,10 +947,11 @@ def choose_action(req):
                     CARD_TO_INT[STATE.my_discard],
                     CARD_TO_INT[STATE.opp_discard],
                     opp_aggr_level=STATE.opp_aggr,
+                    tau=TRACKER.get_dynamic_tau(),
                 )
             if STATE.opp_c1 is not None and len(STATE.opp_c1) > 0:
                 my_d_int = CARD_TO_INT[STATE.my_discard] if STATE.my_discard else None
-                eq, opp_nut_share, has_nut_blocker = exact_river_range_equity(
+                eq, opp_nut_share, has_nut_blocker, eq_when_called = exact_river_range_equity(
                     board5, hero2, STATE.opp_c1, STATE.opp_c2, STATE.opp_weights, my_disc=my_d_int
                 )
             else:
@@ -817,56 +961,121 @@ def choose_action(req):
                 eq = float(np.clip(score / float(8 << 20), 0.15, 0.95))
                 opp_nut_share = 0.0
                 has_nut_blocker = False
+                eq_when_called = eq
         else:
             eq = 0.50
             opp_nut_share = 0.0
             has_nut_blocker = False
+            eq_when_called = 0.50
 
     # ==========================================================================
     # 4. POSTFLOP DECISION ENGINE (Value Sizing, Semi-Bluffs, River Polarized Bluffs)
     # ==========================================================================
     req_eq = pot_odds + call_delta
+    # Disciplined over-folding against low-bluff opponents on Turn and River
+    is_maniac = (archetype == "MANIAC") or (TRACKER.opp_all_ins / max(1, TRACKER.hands_played) > 0.20)
+    has_bluffed_river = ((TRACKER.sd_bluff_rivers >= 1) and (TRACKER.sd_bluff_rivers / max(1, TRACKER.sd_aggr_rivers) >= 0.20)) or TRACKER.is_censored_polarized_bluffer()
+    should_overfold = (not is_maniac) and (not has_bluffed_river)
+
+    if street in ("turn", "river") and to_call > 0:
+        if should_overfold:
+            if to_call >= int(pot * 0.35) or to_call >= 8:
+                req_eq += 0.07 if street == "turn" else 0.09
+            if to_call >= int(pot * 0.70) or to_call >= 35:
+                req_eq += 0.08
+
     # Tighten call threshold if opponent range has heavy nut share on big bet
     if street == "river" and opp_nut_share > 0.35 and to_call > pot:
         req_eq += 0.06
 
     if to_call == 0:
         if "raise" in legal:
-            # Value bet threshold (thinner on river vs calling stations, tighter on turn)
-            val_thresh = 0.57 if (street == "river" and archetype == "FISH_STATION") else 0.61
-            if eq >= val_thresh:
-                frac = (0.52 + 0.85 * (eq - val_thresh)) * val_size_mult
+            # 1. Value bet threshold
+            # On River: require both eq >= 0.60 AND eq_when_called >= 0.51 for medium hands
+            # Hands with two pair or better (eq >= 0.72) are pure value bets
+            if street == "river":
+                is_station = archetype == "FISH_STATION" or TRACKER.post_fold_rate < 0.25
+                can_value_bet = (eq >= 0.72) or (eq >= 0.56 and is_station) or (eq >= 0.60 and eq_when_called >= 0.51)
+                val_thresh = 0.56 if is_station else 0.60
+            else:
+                can_value_bet = eq >= 0.60
+                val_thresh = 0.60
+
+            if can_value_bet:
+                frac = (0.50 + 0.85 * (eq - val_thresh)) * val_size_mult
                 target = my_bet + max(2, int(round(pot * frac)))
                 return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
 
-            # Flop / Turn Semi-Bluff C-Bet or Probe Bet
-            if street in ("flop", "turn") and 0.40 <= eq <= 0.51:
-                cbet_prob = (0.32 if street == "flop" else 0.22) * bluff_mult
-                if RNG.random() < cbet_prob:
-                    target = my_bet + max(2, int(round(pot * 0.55)))
-                    return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+            # Check if opponent is fold-prone postflop (uncontaminated post_fold_rate)
+            opp_fold_prone = TRACKER.post_fold_rate > 0.40
+            is_folder = (opp_fold_prone or archetype in ("NIT", "TAG") or (archetype != "FISH_STATION" and TRACKER.hands_played < 6)) and (not TRACKER.anti_trap_active)
 
-            # Game-Theoretic River Bluff with Low-Showdown-Value Hands (when opp can fold)
-            if street == "river" and eq < 0.22 and bluff_mult >= 0.60:
-                bonus = 0.12 if (has_nut_blocker and archetype in ("TAG", "LAG", "NIT")) else 0.0
-                river_bluff_prob = min(0.40, 0.16 * bluff_mult + bonus)
-                if RNG.random() < river_bluff_prob:
-                    target = my_bet + max(2, int(round(pot * 0.68)))
-                    return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+            # 2. Range-Advantage C-Betting & Probe Betting on Flop and Turn
+            if street in ("flop", "turn"):
+                if is_folder and bluff_mult >= 0.70:
+                    # High frequency probe / c-bet with any pair, draw, or high equity
+                    if eq >= 0.32:
+                        probe_prob = 0.75 if street == "flop" else 0.62
+                        if RNG.random() < probe_prob:
+                            sizing_frac = 0.42 if street == "flop" else 0.46
+                            bet_amt = max(5 if archetype == "NIT" else 2, int(round(pot * sizing_frac)))
+                            target = my_bet + bet_amt
+                            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                    elif eq >= 0.20 and not TRACKER.anti_trap_active and RNG.random() < (0.35 * bluff_mult):
+                        sizing_frac = 0.40 if street == "flop" else 0.44
+                        bet_amt = max(5 if archetype == "NIT" else 2, int(round(pot * sizing_frac)))
+                        target = my_bet + bet_amt
+                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                else:
+                    if 0.40 <= eq <= 0.52 and not TRACKER.anti_trap_active:
+                        cbet_prob = (0.28 if street == "flop" else 0.18) * bluff_mult
+                        if RNG.random() < cbet_prob:
+                            target = my_bet + max(2, int(round(pot * 0.50)))
+                            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+
+            # 3. Capped-Range River Steals & Polarized Bluffs
+            if street == "river":
+                hist = req.get("history", [])
+                opp_checked_turn = any(
+                    h.get("actor") == "opp" and h.get("street") == "turn" and h.get("action") == "check"
+                    for h in hist
+                )
+                if opp_checked_turn and is_folder and not TRACKER.anti_trap_active and eq < 0.38 and bluff_mult >= 0.70 and TRACKER.river_fold_rate > 0.38:
+                    if RNG.random() < 0.60:
+                        target = my_bet + max(5 if archetype == "NIT" else 2, int(round(pot * 0.56)))
+                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+
+                if eq < 0.22 and bluff_mult >= 0.60 and archetype != "FISH_STATION" and not TRACKER.anti_trap_active:
+                    bonus = 0.15 if (has_nut_blocker and archetype in ("TAG", "LAG", "NIT")) else 0.0
+                    river_bluff_prob = min(0.42, 0.18 * bluff_mult + bonus)
+                    if RNG.random() < river_bluff_prob:
+                        target = my_bet + max(2, int(round(pot * 0.65)))
+                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
 
         return sanitize_action({"type": "action", "action": "check"}, req)
     else:
         # Facing a Postflop Bet (to_call > 0)
         # Value Raise / Check-Raise with strong hands
-        if eq >= max(0.73, req_eq + 0.19) and "raise" in legal:
+        if street == "river":
+            can_raise = (eq >= max(0.76, req_eq + 0.22)) and (eq_when_called >= 0.62)
+        else:
+            can_raise = eq >= max(0.73, req_eq + 0.19)
+
+        if can_raise and "raise" in legal:
             target = opp_bet + int(round((pot + to_call) * 0.75 * val_size_mult))
             return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
 
         # Semi-Bluff Check-Raise on Flop with high-equity draws against small/medium bets
-        if street == "flop" and to_call <= (pot // 2) and 0.46 <= eq <= 0.54 and "raise" in legal:
+        if street == "flop" and to_call <= (pot // 2) and 0.46 <= eq <= 0.54 and "raise" in legal and not TRACKER.anti_trap_active:
             if RNG.random() < (0.14 * bluff_mult):
                 target = opp_bet + int(round((pot + to_call) * 0.65))
                 return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+
+        # On River against large bets (to_call >= 20 or >= 0.45*pot):
+        # Do not call down with under-pairs / marginal hands (eq < 0.52) unless opponent is a confirmed maniac
+        if street == "river" and (to_call >= 20 or to_call >= int(pot * 0.45)):
+            if should_overfold and eq < 0.52:
+                return sanitize_action({"type": "action", "action": "fold"}, req)
 
         # Call if equity beats adjusted pot odds
         if eq >= req_eq:
@@ -907,6 +1116,7 @@ def main():
                         CARD_TO_INT[STATE.my_discard],
                         CARD_TO_INT[STATE.opp_discard],
                         opp_aggr_level=STATE.opp_aggr,
+                        tau=TRACKER.get_dynamic_tau(),
                     )
                 continue
             elif t == "hand_result":
