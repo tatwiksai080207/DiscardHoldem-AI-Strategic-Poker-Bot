@@ -2,6 +2,7 @@
 # Match Engine Runtime Outputs and Logs
 # ==============================================================================
 logs/
+logs*/
 *.log
 *_stderr.txt
 A_stderr.txt
@@ -40,7 +41,15 @@ Thumbs.db
 Desktop.ini
 
 # ==============================================================================
-# Research Archive and Large Binary Assets
+# Research Archive, Reviews, and Large Binary Assets
 # ==============================================================================
 docs/research_archive/
+docs/reviews/
+Poker Bot Challenger/
 *.docx
+
+# ==============================================================================
+# Historical Archives
+# ==============================================================================
+dist/archive/
+scripts/archive/

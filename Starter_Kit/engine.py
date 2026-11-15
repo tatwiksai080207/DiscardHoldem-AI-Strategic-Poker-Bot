@@ -8,6 +8,11 @@ Pokerbots local match runner: Discard Hold'em, protocol 1.0.
 Runs a full match between two bots under the same rules as the official engine:
 duplicate deals, alternating seats, no-limit betting with a 4-raise cap, the
 simultaneous exposed discard, time banks, error corrections and forfeits.
+
+A match is played in two legs. Each leg launches fresh bot processes and plays
+every deal exactly once; the second leg replays the same deals with the hole
+cards swapped between the bots. No bot process ever sees both hands of a
+duplicate deal.
 Standard library only. Teams may reuse any code in this file (Rulebook 10.1).
 """
 
@@ -42,10 +47,12 @@ MAX_RAISES = 4  # bets or raises per street; the big blind counts preflop
 PER_RESPONSE_MS = 5000
 STARTUP_S = 5.0
 STDERR_LIMIT = 64 * 1024
+LEGS = 2
 
+# "hands" is the whole match (both legs); time bank and wall clock are per leg.
 STAGES = {
-    1: {"hands": 400, "time_bank_ms": 60_000, "wallclock_s": 180, "cap": 400},
-    2: {"hands": 1000, "time_bank_ms": 150_000, "wallclock_s": 450, "cap": 1000},
+    1: {"hands": 400, "time_bank_ms": 30_000, "wallclock_s": 90, "cap": 400},
+    2: {"hands": 1000, "time_bank_ms": 75_000, "wallclock_s": 225, "cap": 1000},
 }
 
 HAND_NAMES = ("high card", "one pair", "two pair", "three of a kind", "straight",
@@ -147,7 +154,8 @@ class Forfeit(Exception):
 
 
 class Bot:
-    def __init__(self, name, path, python, log_dir, time_bank_ms, per_response_ms):
+    def __init__(self, name, path, python, log_dir, time_bank_ms, per_response_ms,
+                 log_name=None):
         self.name = name
         self.path = os.path.abspath(path)
         try:
@@ -165,7 +173,8 @@ class Bot:
         self.stderr_bytes = 0
         self.stderr_file = None
         if log_dir:
-            self.stderr_file = open(os.path.join(log_dir, f"{name}_stderr.txt"), "wb")
+            fname = f"{log_name or name}_stderr.txt"
+            self.stderr_file = open(os.path.join(log_dir, fname), "wb")
         self.launch_time = time.monotonic()
         self.startup_deadline = self.launch_time + STARTUP_S
         self.proc = subprocess.Popen(
@@ -453,8 +462,9 @@ class Match:
         self.hands = args.hands or stage["hands"]
         if self.hands <= 0 or self.hands % 2:
             sys.exit("--hands must be a positive even number (every deal is played twice)")
+        self.per_leg = self.hands // LEGS  # deals per leg; every deal once per leg
         self.cap = stage["cap"]
-        self.time_bank_ms = stage["time_bank_ms"]
+        self.time_bank_ms = stage["time_bank_ms"]  # per leg
         self.seed = args.seed if args.seed is not None else str(random.SystemRandom().randrange(10 ** 9))
         self.verbose = args.verbose
         self.log_dir = args.log_dir
@@ -462,17 +472,35 @@ class Match:
             os.makedirs(self.log_dir, exist_ok=True)
         self.log = open(os.path.join(self.log_dir, "match.log"), "w", encoding="utf-8") if self.log_dir else None
 
-        bank = math.inf if args.no_time_limits else self.time_bank_ms
-        per_reply = math.inf if args.no_time_limits else PER_RESPONSE_MS
-        bot_a = Bot("A", args.bot_a, args.python, self.log_dir, bank, per_reply)
+        self.args = args
+        self.leg_bank = math.inf if args.no_time_limits else self.time_bank_ms
+        self.per_reply = math.inf if args.no_time_limits else PER_RESPONSE_MS
+        self.leg_wall = math.inf if args.no_time_limits else stage["wallclock_s"]
+        self.labels = (self._label(args.bot_a), self._label(args.bot_b))
+        self.used = [0.0, 0.0]        # time used by A and B, summed over legs
+        self.notice_count = [0, 0]    # notices to A and B, summed over legs
+        self.bots = ()
+        self.leg = 0
+        self.wall_deadline = math.inf
+
+    @staticmethod
+    def _label(path):
         try:
-            bot_b = Bot("B", args.bot_b, args.python, self.log_dir, bank, per_reply)
+            return os.path.relpath(os.path.abspath(path))
+        except ValueError:
+            return os.path.abspath(path)
+
+    def launch(self, leg):
+        """Start fresh processes for both bots. Nothing survives from the previous leg."""
+        a = Bot("A", self.args.bot_a, self.args.python, self.log_dir,
+                self.leg_bank, self.per_reply, f"A_leg{leg + 1}")
+        try:
+            b = Bot("B", self.args.bot_b, self.args.python, self.log_dir,
+                    self.leg_bank, self.per_reply, f"B_leg{leg + 1}")
         except Exception:
-            bot_a.proc.kill()
+            a.proc.kill()
             raise
-        self.bots = (bot_a, bot_b)
-        wall = math.inf if args.no_time_limits else stage["wallclock_s"]
-        self.wall_deadline = time.monotonic() + wall
+        return (a, b)
 
     def write(self, text):
         if self.log:
@@ -494,77 +522,95 @@ class Match:
         if hand.scores:
             shown = f" ({n[0]} {HAND_NAMES[hand.scores[0][0]]}, {n[1]} {HAND_NAMES[hand.scores[1][0]]})"
         self.write(
-            f"#{hand.id:<4} button {n[0]} | {n[0]}: {' '.join(hand.dealt[0])}  "
+            f"L{self.leg + 1} #{hand.id:<4} button {n[0]} | {n[0]}: {' '.join(hand.dealt[0])}  "
             f"{n[1]}: {' '.join(hand.dealt[1])} | board {' '.join(hand.board[:hand.board_seen]) or '-'}"
             f"{disc} | {' '.join(acts)} | {hand.result}{shown} {n[0]} {seat_nets[0]:+d}, {n[1]} {seat_nets[1]:+d}"
         )
 
     def run(self):
-        for bot in self.bots:
-            bot.send({
-                "type": "init", "protocol_version": "1.0", "total_hands": self.hands,
-                "starting_stack": STARTING_STACK, "small_blind": SMALL_BLIND,
-                "big_blind": BIG_BLIND, "time_bank_ms": self.time_bank_ms,
-                "per_response_ms": PER_RESPONSE_MS,
-            })
         totals, played, forfeits = [0, 0], 0, []
-        try:
-            for hand_id in range(1, self.hands + 1):
-                deal = (hand_id - 1) // 2  # hands 2k+1 and 2k+2 share a deal
-                deck = [r + s for r in RANKS for s in SUITS]
-                random.Random(f"{self.seed}:{deal}").shuffle(deck)
-                button = (hand_id - 1) % 2  # seats alternate; cards stay with the seat
-                hand = Hand(self, hand_id, button, (deck[0:3], deck[3:6]), deck[6:11])
-                seat_nets = hand.play()
-                totals[button] += seat_nets[0]
-                totals[1 - button] += seat_nets[1]
-                played = hand_id
-                self.log_hand(hand, seat_nets)
-        except Forfeit as f:
-            forfeits = f.failures
-        finally:
-            failed = {bot.name for bot, _ in forfeits}
+        forfeit_at = None  # (leg, hand) where a forfeit happened
+        for leg in range(LEGS):
+            self.leg = leg
+            self.bots = self.launch(leg)
+            self.wall_deadline = time.monotonic() + self.leg_wall
             for bot in self.bots:
-                if not forfeits:
-                    reason = "complete"
-                elif bot.name in failed:
-                    reason = "forfeit"
-                else:
-                    reason = "opp_forfeit"
-                bot.send({"type": "match_end", "reason": reason})
-            for bot in self.bots:
-                bot.close()
-        self.summary(totals, played, forfeits)
+                bot.send({
+                    "type": "init", "protocol_version": "1.0", "total_hands": self.per_leg,
+                    "starting_stack": STARTING_STACK, "small_blind": SMALL_BLIND,
+                    "big_blind": BIG_BLIND, "time_bank_ms": self.time_bank_ms,
+                    "per_response_ms": PER_RESPONSE_MS,
+                })
+            hand_no = 0
+            try:
+                for deal in range(self.per_leg):
+                    hand_no = deal + 1
+                    deck = [r + s for r in RANKS for s in SUITS]
+                    random.Random(f"{self.seed}:{deal}").shuffle(deck)  # same deal in both legs
+                    # Leg 1: bot A holds deck[0:3] on even deals. Leg 2 flips every
+                    # deal, so each bot gets the other set of hole cards, same board.
+                    button = (deal + leg) % 2
+                    hand = Hand(self, hand_no, button, (deck[0:3], deck[3:6]), deck[6:11])
+                    seat_nets = hand.play()
+                    totals[button] += seat_nets[0]
+                    totals[1 - button] += seat_nets[1]
+                    played += 1
+                    self.log_hand(hand, seat_nets)
+            except Forfeit as f:
+                forfeits = f.failures
+                forfeit_at = (leg + 1, hand_no)
+            finally:
+                failed = {bot.name for bot, _ in forfeits}
+                for bot in self.bots:
+                    if not forfeits:
+                        reason = "complete"
+                    elif bot.name in failed:
+                        reason = "forfeit"
+                    else:
+                        reason = "opp_forfeit"
+                    bot.send({"type": "match_end", "reason": reason})
+                for k, bot in enumerate(self.bots):
+                    bot.close()
+                    self.used[k] += bot.time_used_s
+                    self.notice_count[k] += bot.notices
+                self.bots = ()
+            if forfeits:  # a forfeit in either leg ends the match
+                break
+        self.summary(totals, played, forfeits, forfeit_at)
         if self.log:
             self.log.close()
 
-    def summary(self, totals, played, forfeits):
-        lines = ["", f"Seed {self.seed} | {played} of {self.hands} hands played"]
-        for i, bot in enumerate(self.bots):
+    def summary(self, totals, played, forfeits, forfeit_at):
+        lines = ["", f"Seed {self.seed} | {played} of {self.hands} hands played "
+                     f"({LEGS} legs of {self.per_leg})"]
+        for i, name in enumerate(("A", "B")):
             lines.append(
-                f"  {bot.name}  {bot.label:<32} net {totals[i]:+7d}   "
-                f"time used {bot.time_used_s:6.2f} s of {self.time_bank_ms / 1000:.0f} s   "
-                f"notices {bot.notices}"
+                f"  {name}  {self.labels[i]:<32} net {totals[i]:+7d}   "
+                f"time used {self.used[i]:6.2f} s (bank {self.time_bank_ms / 1000:.0f} s per leg)   "
+                f"notices {self.notice_count[i]}"
             )
         if not forfeits:
             if totals[0] == totals[1]:
                 lines.append("Result: draw")
             else:
-                winner = self.bots[0] if totals[0] > totals[1] else self.bots[1]
-                lines.append(f"Result: {winner.name} wins")
+                winner = "A" if totals[0] > totals[1] else "B"
+                lines.append(f"Result: {winner} wins")
             capped = max(-self.cap, min(self.cap, totals[0]))
             lines.append(f"Capped delta: A {capped:+d}, B {-capped:+d} (C = {self.cap})")
-        elif len(forfeits) == 2:
-            for bot, reason in forfeits:
-                lines.append(f"{bot.name} forfeited at hand {played + 1}: {reason}")
-            lines.append("Result: draw (both forfeited in the same hand), delta 0 for both")
         else:
-            bot, reason = forfeits[0]
-            other = self.bots[1] if bot is self.bots[0] else self.bots[0]
-            lines.append(f"{bot.name} forfeited at hand {played + 1}: {reason}")
-            lines.append(f"Result: {other.name} wins by forfeit; {other.name}'s delta is set to +{self.cap}")
+            where = f"leg {forfeit_at[0]}, hand {forfeit_at[1]}"
+            if len(forfeits) == 2:
+                for bot, reason in forfeits:
+                    lines.append(f"{bot.name} forfeited at {where}: {reason}")
+                lines.append("Result: draw (both forfeited in the same hand), delta 0 for both")
+            else:
+                bot, reason = forfeits[0]
+                other = "B" if bot.name == "A" else "A"
+                lines.append(f"{bot.name} forfeited at {where}: {reason}")
+                lines.append(f"Result: {other} wins by forfeit; {other}'s delta is set to +{self.cap}")
         if self.log_dir:
-            lines.append(f"Logs: {os.path.join(self.log_dir, 'match.log')}, A_stderr.txt, B_stderr.txt")
+            lines.append(f"Logs: {os.path.join(self.log_dir, 'match.log')}, "
+                         f"A_leg1_stderr.txt, A_leg2_stderr.txt, B_leg1_stderr.txt, B_leg2_stderr.txt")
         text = "\n".join(lines)
         print(text)
         if self.log:
@@ -577,7 +623,8 @@ def main():
     p.add_argument("bot_b", help="path to the second bot's bot.py")
     p.add_argument("--stage", type=int, choices=(1, 2), default=1,
                    help="match length and limits to use (default: 1)")
-    p.add_argument("--hands", type=int, help="number of hands, even (default: 400 in stage 1, 1000 in stage 2)")
+    p.add_argument("--hands", type=int,
+                   help="total hands over both legs, even (default: 400 in stage 1, 1000 in stage 2)")
     p.add_argument("--seed", help="deal seed; the same seed gives the same deals (default: random)")
     p.add_argument("--log-dir", default="logs", help="folder for match.log and stderr files ('' to disable)")
     p.add_argument("--python", default=sys.executable, help="interpreter used to run the bots (default: this one)")
@@ -593,7 +640,10 @@ def main():
         match.run()
     except KeyboardInterrupt:
         for bot in match.bots:
-            bot.proc.kill()
+            try:
+                bot.proc.kill()
+            except Exception:
+                pass
         sys.exit("interrupted")
 
 
