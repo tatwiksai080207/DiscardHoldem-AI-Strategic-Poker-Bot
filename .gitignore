@@ -1,24 +1,46 @@
-# Excluded research and problem statement files
-deep-research-report-pokerbots.md
-gemini pokerbots deep research.docx
-info.md
-research report c.md
-unified_pokerbots_2026_master_blueprint.md
-NHPC Paper Extension.docx
+# ==============================================================================
+# Match Engine Runtime Outputs and Logs
+# ==============================================================================
+logs/
+*.log
+*_stderr.txt
+A_stderr.txt
+B_stderr.txt
+*.tmp
 
-# Python artifacts
+# ==============================================================================
+# Python Bytecode and Compiler Caches
+# ==============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.eggs/
+*.egg-info/
 
-# Match logs
-logs/
-*.log
-*_stderr.txt
+# ==============================================================================
+# Virtual Environments
+# ==============================================================================
+.venv/
+venv/
+env/
+ENV/
+audit/venv*/
 
-# Environment and editor files
+# ==============================================================================
+# Editor and Operating System Metadata
+# ==============================================================================
 .vscode/
 .idea/
-*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
 
+# ==============================================================================
+# Research Archive and Large Binary Assets
+# ==============================================================================
+docs/research_archive/
+*.docx
