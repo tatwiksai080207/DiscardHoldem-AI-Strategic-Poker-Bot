@@ -1,10 +1,14 @@
+import os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")   # grader has 1 vCPU; avoid thread oversubscription. Must run before numpy import.
 import sys
 import json
-import time
 import math
-import zlib
-import lzma
 import base64
+try:
+    import lzma
+except Exception:   # some Python builds lack liblzma; the bot then falls back to the analytic preflop table
+    lzma = None
 import numpy as np
 
 # ==============================================================================
@@ -255,7 +259,7 @@ def flop_keep_value_batch(c1_arr, c2_arr, flop3):
     val += (np.maximum(r1, r2) * 0.04 + np.minimum(r1, r2) * 0.02)
     return val
 
-def evaluate_3way_flop_discard(hero3, flop3, n_rollouts=320, opp_aggr=0.3):
+def evaluate_3way_flop_discard(hero3, flop3, n_rollouts=320, opp_aggr=0.3, opp_range_bias=0.0):
     rem46 = np.setdiff1d(np.arange(52, dtype=np.int32), np.concatenate([hero3, flop3]))
     if n_rollouts <= 0:
         c1s = np.array([hero3[1], hero3[0], hero3[0]], dtype=np.int32)
@@ -294,8 +298,17 @@ def evaluate_3way_flop_discard(hero3, flop3, n_rollouts=320, opp_aggr=0.3):
     opp_final = opp_scores_3[best_opp_d, np.arange(n_rollouts)]
     best_opp_fval = opp_flop_val[best_opp_d, np.arange(n_rollouts)]
 
-    # Weight rollouts by opponent preflop/flop aggression prior
-    if opp_aggr > 0.35:
+    # Weight rollouts by opponent preflop/flop aggression prior or range bias in big pots
+    if opp_range_bias > 0.05:
+        opp_cids = PREFLOP_CANON_ID[opp3[:, 0], opp3[:, 1], opp3[:, 2]]
+        opp_pre = PREFLOP_BASE_STRENGTH[opp_cids]
+        w_roll = np.exp(opp_range_bias * 3.0 * (opp_pre - np.mean(opp_pre)))
+        w_roll /= np.sum(w_roll)
+        equities = (
+            np.sum((hero_scores > opp_final[None, :]) * w_roll[None, :], axis=1)
+            + 0.5 * np.sum((hero_scores == opp_final[None, :]) * w_roll[None, :], axis=1)
+        )
+    elif opp_aggr > 0.35:
         rollout_w = np.exp((opp_aggr - 0.30) * 0.25 * (best_opp_fval - np.mean(best_opp_fval)))
         rollout_w /= np.sum(rollout_w)
         equities = (
@@ -430,6 +443,13 @@ def exact_river_range_equity(board5, hero2, opp_c1, opp_c2, opp_weights, my_disc
 # ==============================================================================
 # SUBSYSTEM 5: 7-ARCHETYPE OPPONENT TRACKER & 4-MODE MATCH RISK CONTROLLER
 # ==============================================================================
+def worst_case_fold_bleed(hands_rem):
+    """Worst-case chips lost if we fold preflop in every remaining hand.
+    Seats alternate: button loses 1 (SB), big blind loses 2. Worst case = hands_rem + ceil(hands_rem/2)
+    <= ceil(1.5*hands_rem). +2 is a safety margin."""
+    return int(math.ceil(hands_rem * 1.5)) + 2
+
+
 class OpponentAndMatchTracker:
     def __init__(self):
         self.reset()
@@ -675,17 +695,36 @@ class OpponentAndMatchTracker:
             return True
         hands_rem = max(0, self.total_hands - hand_id + 1)
         max_blind_loss = int(math.ceil(hands_rem * 0.75)) + 12
+        # 1. Full Cap + Match Win Lock (at any point in the match)
         if street == "preflop" and my_bet <= 2 and self.cum_net >= (self.cap_c + max_blind_loss):
             self.match_locked = True
             return True
+        # 2. Narrow Lead Match-Point Lock in Final 24 Hands.
+        # Uses the TRUE worst-case fold bleed (1.5 chips/hand) so the match win is really guaranteed.
+        win_cushion = self.cum_net - worst_case_fold_bleed(hands_rem)
+        if street == "preflop" and my_bet <= 2 and hands_rem <= 24 and 0 < win_cushion <= 24:
+            self.match_locked = True
+            return True
         return False
+
+    def get_late_match_risk_cap(self, hand_id):
+        """In the final 36 hands, if we have a mathematical match win locked (cum_net > max_blind_loss)
+        but are still playing for extra Score_cap chips, never risk enough chips in one hand to lose the match!"""
+        hands_rem = max(0, self.total_hands - hand_id + 1)
+        if hands_rem > 36:
+            return 200
+        max_blind_loss = int(math.ceil(hands_rem * 0.75)) + 12
+        win_cushion = self.cum_net - max_blind_loss
+        if win_cushion > 24 and self.cum_net < (self.cap_c + max_blind_loss):
+            return max(6, int(win_cushion - 4))
+        return 200
 
     def get_match_mode(self, hand_id):
         hands_rem = max(0, self.total_hands - hand_id + 1)
         max_blind_loss = int(math.ceil(hands_rem * 0.75)) + 3
         if self.cum_net > (self.cap_c + max_blind_loss):
             return "LOCK_FULL_CAP"
-        if hands_rem <= 24 and self.cum_net > (max_blind_loss + 6):
+        if hands_rem <= 24 and self.cum_net > worst_case_fold_bleed(hands_rem):
             return "LOCK_MATCH_WIN"
         if self.cum_net > int(1.25 * self.cap_c) and hands_rem < 100:
             return "SOFT_PROTECT"
@@ -714,6 +753,7 @@ class HandState:
 
 TRACKER = OpponentAndMatchTracker()
 STATE = HandState()
+ERR_COUNT = 0
 
 
 def sanitize_action(reply, req):
@@ -734,6 +774,32 @@ def sanitize_action(reply, req):
         amt = max(min_r, min(max_r, amt))
         return {"type": "action", "action": "raise", "amount": int(amt)}
     return {"type": "action", "action": act}
+
+
+def make_action(reply, req, eq, hand_id):
+    risk_cap = TRACKER.get_late_match_risk_cap(hand_id)
+    if risk_cap < 200 and eq < 0.86:
+        act = reply.get("action")
+        my_bet = int(req.get("my_bet", 0))
+        to_call = int(req.get("to_call", 0))
+        legal = req.get("legal_actions", [])
+        if act == "raise":
+            min_r = int(req.get("min_raise", 2))
+            target = int(reply.get("amount", min_r))
+            target = min(target, risk_cap)
+            if target < min_r:
+                if to_call == 0 and "check" in legal:
+                    reply = {"type": "action", "action": "check"}
+                elif (my_bet + to_call) <= risk_cap and "call" in legal:
+                    reply = {"type": "action", "action": "call"}
+                else:
+                    reply = {"type": "action", "action": "check" if "check" in legal else "fold"}
+            else:
+                reply["amount"] = target
+        elif act == "call":
+            if (my_bet + to_call) > risk_cap:
+                reply = {"type": "action", "action": "check" if "check" in legal else "fold"}
+    return sanitize_action(reply, req)
 
 
 def sanitize_discard(reply, req):
@@ -791,7 +857,9 @@ def choose_discard(req):
         n_sims = 0
     else:
         n_sims = 340 if time_left > 15000 else (100 if time_left > 5000 else 0)
-    best_d, _, _ = evaluate_3way_flop_discard(hero3, flop3, n_rollouts=n_sims, opp_aggr=STATE.opp_aggr)
+    pot = int(req.get("pot", 4))
+    opp_range_bias = min(1.2, (pot - 40) / 120.0) if pot >= 60 else 0.0
+    best_d, _, _ = evaluate_3way_flop_discard(hero3, flop3, n_rollouts=n_sims, opp_aggr=STATE.opp_aggr, opp_range_bias=opp_range_bias)
     return sanitize_discard({"type": "discard", "card": hole_strs[best_d]}, req)
 
 
@@ -860,31 +928,31 @@ def choose_action(req):
             limp_thresh = 0.395 + steal_delta
             if eq >= open_raise_thresh and "raise" in legal:
                 target = 6 if eq >= 0.56 else 5
-                return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
             if eq >= limp_thresh and "call" in legal:
-                return sanitize_action({"type": "action", "action": "call"}, req)
-            return sanitize_action({"type": "action", "action": "fold"}, req)
+                return make_action({"type": "action", "action": "call"}, req, eq, hand_id)
+            return make_action({"type": "action", "action": "fold"}, req, eq, hand_id)
 
         # CASE B: Big Blind Option vs Button Limp (my_bet == 2, opp_bet == 2, to_call == 0)
         if to_call == 0:
             if eq >= (0.54 + open_thresh_delta) and "raise" in legal:
                 target = int(round(6 * val_size_mult))
-                return sanitize_action({"type": "action", "action": "raise", "amount": max(6, target)}, req)
-            return sanitize_action({"type": "action", "action": "check"}, req)
+                return make_action({"type": "action", "action": "raise", "amount": max(6, target)}, req, eq, hand_id)
+            return make_action({"type": "action", "action": "check"}, req, eq, hand_id)
 
         # CASE C: Facing a Preflop Raise (opp_bet > 2, to_call > 0)
         req_eq = pot_odds + call_delta - (0.03 if STATE.seat == "button" else 0.0)
         # Value 3-bet / 4-bet
         if eq >= max(0.62, req_eq + 0.14) and "raise" in legal:
             target = opp_bet + int(round((pot + to_call) * 0.85 * val_size_mult))
-            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+            return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
         # Light 3-bet bluff with suited wheel/broadway blockers against non-stations
         if opp_bet <= 8 and 0.48 <= eq <= 0.52 and "raise" in legal and RNG.random() < (0.14 * bluff_mult):
             target = opp_bet * 3
-            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+            return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
         if eq >= req_eq:
-            return sanitize_action({"type": "action", "action": "call"}, req)
-        return sanitize_action({"type": "action", "action": "fold"}, req)
+            return make_action({"type": "action", "action": "call"}, req, eq, hand_id)
+        return make_action({"type": "action", "action": "fold"}, req, eq, hand_id)
 
     # ==========================================================================
     # 3. POSTFLOP EQUITY EVALUATION (Flop / Turn / River)
@@ -1004,7 +1072,7 @@ def choose_action(req):
             if can_value_bet:
                 frac = (0.50 + 0.85 * (eq - val_thresh)) * val_size_mult
                 target = my_bet + max(2, int(round(pot * frac)))
-                return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
             # Check if opponent is fold-prone postflop (uncontaminated post_fold_rate)
             opp_fold_prone = TRACKER.post_fold_rate > 0.40
@@ -1020,18 +1088,18 @@ def choose_action(req):
                             sizing_frac = 0.42 if street == "flop" else 0.46
                             bet_amt = max(5 if archetype == "NIT" else 2, int(round(pot * sizing_frac)))
                             target = my_bet + bet_amt
-                            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                            return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
                     elif eq >= 0.20 and not TRACKER.anti_trap_active and RNG.random() < (0.35 * bluff_mult):
                         sizing_frac = 0.40 if street == "flop" else 0.44
                         bet_amt = max(5 if archetype == "NIT" else 2, int(round(pot * sizing_frac)))
                         target = my_bet + bet_amt
-                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                        return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
                 else:
                     if 0.40 <= eq <= 0.52 and not TRACKER.anti_trap_active:
                         cbet_prob = (0.28 if street == "flop" else 0.18) * bluff_mult
                         if RNG.random() < cbet_prob:
                             target = my_bet + max(2, int(round(pot * 0.50)))
-                            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                            return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
             # 3. Capped-Range River Steals & Polarized Bluffs
             if street == "river":
@@ -1043,16 +1111,16 @@ def choose_action(req):
                 if opp_checked_turn and is_folder and not TRACKER.anti_trap_active and eq < 0.38 and bluff_mult >= 0.70 and TRACKER.river_fold_rate > 0.38:
                     if RNG.random() < 0.60:
                         target = my_bet + max(5 if archetype == "NIT" else 2, int(round(pot * 0.56)))
-                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                        return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
                 if eq < 0.22 and bluff_mult >= 0.60 and archetype != "FISH_STATION" and not TRACKER.anti_trap_active:
                     bonus = 0.15 if (has_nut_blocker and archetype in ("TAG", "LAG", "NIT")) else 0.0
                     river_bluff_prob = min(0.42, 0.18 * bluff_mult + bonus)
                     if RNG.random() < river_bluff_prob:
                         target = my_bet + max(2, int(round(pot * 0.65)))
-                        return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                        return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
-        return sanitize_action({"type": "action", "action": "check"}, req)
+        return make_action({"type": "action", "action": "check"}, req, eq, hand_id)
     else:
         # Facing a Postflop Bet (to_call > 0)
         # Value Raise / Check-Raise with strong hands
@@ -1063,28 +1131,29 @@ def choose_action(req):
 
         if can_raise and "raise" in legal:
             target = opp_bet + int(round((pot + to_call) * 0.75 * val_size_mult))
-            return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+            return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
         # Semi-Bluff Check-Raise on Flop with high-equity draws against small/medium bets
         if street == "flop" and to_call <= (pot // 2) and 0.46 <= eq <= 0.54 and "raise" in legal and not TRACKER.anti_trap_active:
             if RNG.random() < (0.14 * bluff_mult):
                 target = opp_bet + int(round((pot + to_call) * 0.65))
-                return sanitize_action({"type": "action", "action": "raise", "amount": target}, req)
+                return make_action({"type": "action", "action": "raise", "amount": target}, req, eq, hand_id)
 
         # On River against large bets (to_call >= 20 or >= 0.45*pot):
         # Do not call down with under-pairs / marginal hands (eq < 0.52) unless opponent is a confirmed maniac
         if street == "river" and (to_call >= 20 or to_call >= int(pot * 0.45)):
             if should_overfold and eq < 0.52:
-                return sanitize_action({"type": "action", "action": "fold"}, req)
+                return make_action({"type": "action", "action": "fold"}, req, eq, hand_id)
 
         # Call if equity beats adjusted pot odds
         if eq >= req_eq:
-            return sanitize_action({"type": "action", "action": "call"}, req)
+            return make_action({"type": "action", "action": "call"}, req, eq, hand_id)
 
-        return sanitize_action({"type": "action", "action": "fold"}, req)
+        return make_action({"type": "action", "action": "fold"}, req, eq, hand_id)
 
 
 def main():
+    global ERR_COUNT
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -1131,8 +1200,10 @@ def main():
             else:
                 continue
         except Exception as exc:
-            sys.stderr.write(f"ERR hand={STATE.hand_id}: {exc}\n")
-            sys.stderr.flush()
+            ERR_COUNT += 1
+            if ERR_COUNT <= 40:
+                sys.stderr.write(f"ERR hand={STATE.hand_id}: {exc}\n")
+                sys.stderr.flush()
             if t == "action_request":
                 reply = sanitize_action({"action": "check"}, msg)
             elif t == "discard_request":

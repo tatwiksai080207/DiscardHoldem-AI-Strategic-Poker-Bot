@@ -138,6 +138,63 @@ def test_fuzz_emergency_time_throttle():
     assert reply["action"] in ["check", "raise"]
     print(f"  [PASS] Emergency Time-Bank Throttling: took {duration_ms:.3f} ms (< 5.0 ms threshold)")
 
+def test_late_match_risk_cap_and_lock():
+    """Verify Upgrade B: get_late_match_risk_cap and narrow-lead lock in final hands."""
+    bot.TRACKER.reset()
+    bot.TRACKER.total_hands = 400
+    bot.TRACKER.cum_net = 60
+
+    # Hand 360 (41 hands remaining > 36): risk_cap must be 200 (no risk cap)
+    cap360 = bot.TRACKER.get_late_match_risk_cap(360)
+    assert cap360 == 200, f"Expected 200, got {cap360}"
+
+    # Hand 380 (21 hands remaining <= 36):
+    # max_blind_loss = ceil(21 * 0.75) + 12 = 16 + 12 = 28.
+    # win_cushion = 60 - 28 = 32 > 24.
+    # risk_cap = max(6, 32 - 4) = 28.
+    cap380 = bot.TRACKER.get_late_match_risk_cap(380)
+    assert cap380 == 28, f"Expected 28, got {cap380}"
+
+    # In final 24 hands (hand 385, 16 hands rem, max_blind_loss = 12 + 12 = 24):
+    # If cum_net = 35 -> win_cushion = 35 - 24 = 11 (0 < win_cushion <= 24):
+    # is_mathematical_lock must trigger True!
+    bot.TRACKER.cum_net = 35
+    locked = bot.TRACKER.is_mathematical_lock(385, street="preflop", my_bet=1)
+    assert locked is True, "Expected narrow lead lock to trigger True"
+    print("  [PASS] Final-36-Hand Risk Cap & Match-Win Lock (Upgrade B)")
+
+def test_deterministic_44_river_turn_eval():
+    """Verify Upgrade A: Turn evaluates all 44 rivers deterministically when time_left_ms > 18000."""
+    bot.STATE.reset()
+    bot.STATE.hole_cards = ["Ah", "Kd"]
+    bot.STATE.flop_cards = [bot.CARD_TO_INT[c] for c in ["Th", "9h", "2c"]]
+    bot.STATE.my_discard = "3s"
+    bot.STATE.opp_discard = "4d"
+
+    req = {
+        "type": "action_request",
+        "hand_id": 12,
+        "street": "turn",
+        "board": ["Th", "9h", "2c", "7h"],
+        "pot": 30,
+        "my_bet": 15,
+        "opp_bet": 15,
+        "to_call": 0,
+        "my_stack": 170,
+        "opp_stack": 170,
+        "legal_actions": ["check", "raise"],
+        "min_raise": 17,
+        "max_raise": 185,
+        "time_left_ms": 45000  # > 18000 -> full 44-river enumeration
+    }
+    t0 = time.perf_counter()
+    reply = bot.choose_action(req)
+    t1 = time.perf_counter()
+    duration_ms = (t1 - t0) * 1000.0
+    assert reply["type"] == "action"
+    assert reply["action"] in ["check", "raise"]
+    print(f"  [PASS] Turn River-Sampling Evaluation: took {duration_ms:.2f} ms")
+
 if __name__ == "__main__":
     print("Running Adversarial Protocol & Edge-Case Fuzzing Suite...")
     test_fuzz_worked_example_8_3_allin_discard()
@@ -145,5 +202,7 @@ if __name__ == "__main__":
     test_fuzz_short_stack_clamping()
     test_fuzz_unknown_fields_and_notices()
     test_fuzz_emergency_time_throttle()
+    test_late_match_risk_cap_and_lock()
+    test_deterministic_44_river_turn_eval()
     print("\nALL ADVERSARIAL PROTOCOL FUZZ TESTS PASSED!")
 

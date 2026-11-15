@@ -1,0 +1,302 @@
+ADVERSARIAL OPPONENTS BENCHMARK RUN
+
+=== shove seed 500001 ===
+
+Seed 500001 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +275   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_shove.py   net    -275   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +275, B -275 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== shove seed 500002 ===
+
+Seed 500002 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +225   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_shove.py   net    -225   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +225, B -225 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== shove seed 500003 ===
+
+Seed 500003 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +214   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_shove.py   net    -214   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +214, B -214 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== shove seed 500004 ===
+
+Seed 500004 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +227   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_shove.py   net    -227   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +227, B -227 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== shove seed 500005 ===
+
+Seed 500005 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +210   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_shove.py   net    -210   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +210, B -210 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== minraise seed 500001 ===
+
+Seed 500001 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +171   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_minraise.py net    -171   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +171, B -171 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== minraise seed 500002 ===
+
+Seed 500002 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +154   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_minraise.py net    -154   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +154, B -154 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== minraise seed 500003 ===
+
+Seed 500003 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +270   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_minraise.py net    -270   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +270, B -270 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== minraise seed 500004 ===
+
+Seed 500004 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +241   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_minraise.py net    -241   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +241, B -241 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== minraise seed 500005 ===
+
+Seed 500005 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +157   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_minraise.py net    -157   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +157, B -157 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== limp seed 500001 ===
+
+Seed 500001 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +409   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_limp.py    net    -409   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== limp seed 500002 ===
+
+Seed 500002 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +487   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_limp.py    net    -487   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== limp seed 500003 ===
+
+Seed 500003 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +463   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_limp.py    net    -463   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== limp seed 500004 ===
+
+Seed 500004 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +479   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_limp.py    net    -479   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== limp seed 500005 ===
+
+Seed 500005 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +467   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_limp.py    net    -467   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwayscall seed 500001 ===
+
+Seed 500001 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +570   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwayscall.py net    -570   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwayscall seed 500002 ===
+
+Seed 500002 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +556   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwayscall.py net    -556   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwayscall seed 500003 ===
+
+Seed 500003 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +528   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwayscall.py net    -528   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwayscall seed 500004 ===
+
+Seed 500004 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +666   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwayscall.py net    -666   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwayscall seed 500005 ===
+
+Seed 500005 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +582   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwayscall.py net    -582   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwaysfold seed 500001 ===
+
+Seed 500001 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +464   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwaysfold.py net    -464   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwaysfold seed 500002 ===
+
+Seed 500002 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +468   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwaysfold.py net    -468   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwaysfold seed 500003 ===
+
+Seed 500003 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +471   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwaysfold.py net    -471   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwaysfold seed 500004 ===
+
+Seed 500004 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +471   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwaysfold.py net    -471   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== alwaysfold seed 500005 ===
+
+Seed 500005 | 400 of 400 hands played
+  A  Starter_Kit\bot.py               net    +468   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_alwaysfold.py net    -468   time used   0.00 s of 60 s   notices 0
+Result: A wins
+Capped delta: A +400, B -400 (C = 400)
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== crash seed 500001 ===
+
+Seed 500001 | 61 of 400 hands played
+  A  Starter_Kit\bot.py               net    +745   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_crash.py   net    -745   time used   0.00 s of 60 s   notices 0
+B forfeited at hand 62: crashed or closed stdout
+Result: A wins by forfeit; A's delta is set to +400
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== crash seed 500002 ===
+
+Seed 500002 | 61 of 400 hands played
+  A  Starter_Kit\bot.py               net    +695   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_crash.py   net    -695   time used   0.00 s of 60 s   notices 0
+B forfeited at hand 62: crashed or closed stdout
+Result: A wins by forfeit; A's delta is set to +400
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== crash seed 500003 ===
+
+Seed 500003 | 61 of 400 hands played
+  A  Starter_Kit\bot.py               net    +689   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_crash.py   net    -689   time used   0.00 s of 60 s   notices 0
+B forfeited at hand 62: crashed or closed stdout
+Result: A wins by forfeit; A's delta is set to +400
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== crash seed 500004 ===
+
+Seed 500004 | 61 of 400 hands played
+  A  Starter_Kit\bot.py               net    +745   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_crash.py   net    -745   time used   0.00 s of 60 s   notices 0
+B forfeited at hand 62: crashed or closed stdout
+Result: A wins by forfeit; A's delta is set to +400
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
+=== crash seed 500005 ===
+
+Seed 500005 | 61 of 400 hands played
+  A  Starter_Kit\bot.py               net    +707   time used   0.00 s of 60 s   notices 0
+  B  sparring_bots\bot_adv_crash.py   net    -707   time used   0.00 s of 60 s   notices 0
+B forfeited at hand 62: crashed or closed stdout
+Result: A wins by forfeit; A's delta is set to +400
+Logs: logs\match.log, A_stderr.txt, B_stderr.txt
+
+
